@@ -1,0 +1,28 @@
+services:
+  fast-service:
+    build:
+      context: .
+      dockerfile: fixtures/echo-backend/Dockerfile
+    environment:
+      SERVICE_NAME: fast-service
+      PORT: "9001"
+
+  heavy-service:
+    build:
+      context: .
+      dockerfile: fixtures/echo-backend/Dockerfile
+    environment:
+      SERVICE_NAME: heavy-service
+      PORT: "9002"
+
+  gateway:
+    build: .
+    environment:
+      PORT: "8080"
+      BACKEND_TASKS_URL: http://fast-service:9001
+      BACKEND_SALES_URL: http://heavy-service:9002
+    ports:
+      - "8030:8080"
+    depends_on:
+      - fast-service
+      - heavy-service

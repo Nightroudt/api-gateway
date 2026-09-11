@@ -173,3 +173,63 @@ func TestNewBackendRejectsURLWithoutSchemeOrHost(t *testing.T) {
 		t.Fatal("expected an error for a target URL missing scheme/host, got nil")
 	}
 }
+
+// fakeBreaker is a minimal circuitBreaker double with no dependency on the
+// circuitbreaker package at all — proving Backend is genuinely decoupled
+// from that concrete implementation, not just nominally.
+type fakeBreaker struct {
+	allow             bool
+	successCalls      []uint64
+	failureCalls      []uint64
+	generationToGrant uint64
+}
+
+func (f *fakeBreaker) Allow() (bool, uint64)    { return f.allow, f.generationToGrant }
+func (f *fakeBreaker) RecordSuccess(gen uint64) { f.successCalls = append(f.successCalls, gen) }
+func (f *fakeBreaker) RecordFailure(gen uint64) { f.failureCalls = append(f.failureCalls, gen) }
+
+func TestBackendWorksWithAnySatisfyingBreakerImplementation(t *testing.T) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer upstream.Close()
+
+	fake := &fakeBreaker{allow: true, generationToGrant: 42}
+	backend, err := NewBackend("tasks", upstream.URL, fake)
+	if err != nil {
+		t.Fatalf("NewBackend: %v", err)
+	}
+
+	backend.ServeHTTP(httptest.NewRecorder(), httptest.NewRequest(http.MethodGet, "/", nil))
+
+	if len(fake.successCalls) != 1 || fake.successCalls[0] != 42 {
+		t.Fatalf("expected exactly one RecordSuccess(42) call, got %v", fake.successCalls)
+	}
+	if len(fake.failureCalls) != 0 {
+		t.Fatalf("expected no failure calls, got %v", fake.failureCalls)
+	}
+}
+
+func TestBackendShortCircuitsWhenFakeBreakerDenies(t *testing.T) {
+	var upstreamHit bool
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		upstreamHit = true
+	}))
+	defer upstream.Close()
+
+	fake := &fakeBreaker{allow: false}
+	backend, err := NewBackend("tasks", upstream.URL, fake)
+	if err != nil {
+		t.Fatalf("NewBackend: %v", err)
+	}
+
+	rec := httptest.NewRecorder()
+	backend.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/", nil))
+
+	if rec.Code != http.StatusServiceUnavailable {
+		t.Fatalf("expected 503 when the breaker denies, got %d", rec.Code)
+	}
+	if upstreamHit {
+		t.Fatal("expected the upstream to never be contacted when the breaker denies")
+	}
+}

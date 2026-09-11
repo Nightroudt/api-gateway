@@ -13,8 +13,6 @@ import (
 	"net/url"
 	"strings"
 	"time"
-
-	"github.com/Nightroudt/api-gateway/internal/circuitbreaker"
 )
 
 type ctxKey int
@@ -28,18 +26,31 @@ const generationCtxKey ctxKey = 0
 // forever and permanently blocking that backend even after it recovers.
 const DefaultRequestTimeout = 10 * time.Second
 
+// circuitBreaker is the slice of *circuitbreaker.Breaker's API that Backend
+// actually needs. Defined here, at the point of use, rather than in the
+// circuitbreaker package itself — the idiomatic Go way to get the same
+// substitutability Java/Python get from "program to an interface": Backend
+// depends on this small interface instead of the concrete breaker type,
+// so a test (or a future alternative implementation) can supply a fake
+// without circuitbreaker needing to know callers exist.
+type circuitBreaker interface {
+	Allow() (allowed bool, generation uint64)
+	RecordSuccess(generation uint64)
+	RecordFailure(generation uint64)
+}
+
 // Backend proxies to a single upstream service, short-circuiting requests
 // with 503 while its circuit breaker is open instead of hammering a
 // downstream that has already signaled trouble.
 type Backend struct {
 	Name           string
 	Target         *url.URL
-	Breaker        *circuitbreaker.Breaker
+	Breaker        circuitBreaker
 	RequestTimeout time.Duration
 	proxy          *httputil.ReverseProxy
 }
 
-func NewBackend(name, targetURL string, breaker *circuitbreaker.Breaker) (*Backend, error) {
+func NewBackend(name, targetURL string, breaker circuitBreaker) (*Backend, error) {
 	target, err := url.Parse(targetURL)
 	if err != nil {
 		return nil, err
